@@ -67,14 +67,13 @@ def create_ticket(machine, issue, reporter):
     conn.commit()
     ticket_id = cursor.lastrowid
 
-    # ส่ง LINE แจ้งเตือนเมื่อมีคนแจ้งงานใหม่ (แสดงเวลาเป็น %H:%M)
+    # ส่ง LINE แจ้งเตือนเมื่อมีคนแจ้งงานใหม่ (นำคำว่า ใบงาน ออกแล้ว)
     line_msg = (
         f"แจ้งงาน Breakdown ใหม่!\n"
-        f"ใบงาน: #{ticket_id}\n"
         f"เครื่องจักร: {machine}\n"
         f"อาการชำรุด: {issue}\n"
         f"ผู้แจ้งงาน: {reporter}\n"
-        f"เวลาแจ้ง: {start_time.strftime('%H:%M')}"
+        f"เวลาแจ้ง: {start_time.strftime('%Y-%m-%d %H:%M')}"
     )
     send_line_message(line_msg)
 
@@ -114,15 +113,14 @@ def close_ticket(ticket_id, team_name, action_detail):
     )
     conn.commit()
 
-    # ส่ง LINE แจ้งเตือนเมื่อทีมช่างปิดงาน (แสดงเวลาเป็น %H:%M)
+    # ส่ง LINE แจ้งเตือนเมื่อทีมช่างปิดงาน (นำคำว่า ใบงาน ออกแล้ว)
     line_msg = (
         f"ปิดงาน Breakdown แล้ว\n"
-        f"ใบงาน: #{ticket_id}\n"
         f"เครื่องจักร: {machine_name}\n"
         f"ทีมที่ทำการแก้ไข: {team_name}\n"
         f"วิธีการแก้ไข: {action_detail}\n"
         f"เวลาที่ใช้ทั้งหมด (Downtime): {downtime_minutes} นาที\n"
-        f"เวลาปิดงาน: {end_time.strftime('%H:%M')}"
+        f"เวลาปิดงาน: {end_time.strftime('%Y-%m-%d %H:%M')}"
     )
     send_line_message(line_msg)
 
@@ -196,7 +194,7 @@ elif st.session_state.current_page == "report":
                 create_ticket(machine_name, issue_description, reported_by)
                 now_th = datetime.datetime.now(THAILAND_TZ)
                 st.success(
-                    f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%H:%M')})"
+                    f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
                 )
             else:
                 st.error("กรุณากรอกข้อมูลที่มีเครื่องหมาย * ให้ครบถ้วน")
@@ -213,8 +211,14 @@ elif st.session_state.current_page == "pending":
         st.info("ไม่มีงาน Breakdown ค้างในระบบ")
     else:
         for idx, row in pending_df.iterrows():
+            try:
+                dt_obj = datetime.datetime.fromisoformat(str(row['start_time']))
+                formatted_start = dt_obj.strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                formatted_start = str(row['start_time'])[:16]
+
             with st.expander(
-                f"ID #{row['id']} - {row['machine_name']} (แจ้งเมื่อ: {row['start_time']} โดย {row['reported_by']})"
+                f"ID #{row['id']} - {row['machine_name']} (แจ้งเมื่อ: {formatted_start} โดย {row['reported_by']})"
             ):
                 st.write(f"**อาการชำรุด:** {row['issue_description']}")
 
