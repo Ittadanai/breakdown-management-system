@@ -67,7 +67,6 @@ def create_ticket(machine, issue, reporter):
     conn.commit()
     ticket_id = cursor.lastrowid
 
-    # ส่ง LINE แจ้งเตือนเมื่อมีคนแจ้งงานใหม่ (นำคำว่า ใบงาน ออกแล้ว)
     line_msg = (
         f"แจ้งงาน Breakdown ใหม่!\n"
         f"เครื่องจักร: {machine}\n"
@@ -113,7 +112,6 @@ def close_ticket(ticket_id, team_name, action_detail):
     )
     conn.commit()
 
-    # ส่ง LINE แจ้งเตือนเมื่อทีมช่างปิดงาน (นำคำว่า ใบงาน ออกแล้ว)
     line_msg = (
         f"ปิดงาน Breakdown แล้ว\n"
         f"เครื่องจักร: {machine_name}\n"
@@ -238,21 +236,13 @@ elif st.session_state.current_page == "pending":
                             st.warning("กรุณากรอกชื่อทีมและรายละเอียดการแก้ไขให้ครบถ้วน")
 
 elif st.session_state.current_page == "history":
-    st.title("ประวัติการซ่อมและสรุปเวลา Downtime")
+    st.title("Record Downtime")
 
     all_df = pd.read_sql_query(
         "SELECT * FROM breakdown_logs ORDER BY id DESC", conn
     )
 
     if not all_df.empty:
-        closed_df = all_df[all_df["status"] == "Closed"]
-        total_downtime = int(closed_df["downtime_minutes"].sum()) if not closed_df.empty else 0
-
-        col1, col2 = st.columns(2)
-        col1.metric("จำนวนงานทั้งหมด", f"{len(all_df)} รายการ")
-        col2.metric("เวลา Downtime รวมทั้งหมด", f"{total_downtime} นาที")
-
-        st.divider()
         st.dataframe(all_df, use_container_width=True)
     else:
         st.write("ยังไม่มีข้อมูลในระบบ")
