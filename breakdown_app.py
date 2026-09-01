@@ -48,9 +48,17 @@ CREATE TABLE IF NOT EXISTS breakdown_logs (
     end_time TIMESTAMP,
     downtime_minutes INTEGER,
     status TEXT,
-    action_taken TEXT
+    action_taken TEXT,
+    team_name TEXT
 )
 """)
+
+# เพิ่มคอลัมน์ team_name หากฐานข้อมูลเดิมยังไม่มี
+try:
+    cursor.execute("ALTER TABLE breakdown_logs ADD COLUMN team_name TEXT")
+except sqlite3.OperationalError:
+    pass  # มีคอลัมน์อยู่แล้ว
+
 conn.commit()
 
 
@@ -100,15 +108,13 @@ def close_ticket(ticket_id, team_name, action_detail):
     duration = end_time - start_time
     downtime_minutes = math.ceil(duration.total_seconds() / 60)
 
-    full_action_text = f"ทีมที่แก้ไข: {team_name} | รายละเอียด: {action_detail}"
-
     cursor.execute(
         """
         UPDATE breakdown_logs 
-        SET end_time = ?, downtime_minutes = ?, status = ?, action_taken = ?
+        SET end_time = ?, downtime_minutes = ?, status = ?, action_taken = ?, team_name = ?
         WHERE id = ?
     """,
-        (end_time, downtime_minutes, "Closed", full_action_text, ticket_id),
+        (end_time, downtime_minutes, "Closed", action_detail, team_name, ticket_id),
     )
     conn.commit()
 
@@ -239,10 +245,28 @@ elif st.session_state.current_page == "history":
     st.title("Record Downtime")
 
     all_df = pd.read_sql_query(
-        "SELECT * FROM breakdown_logs ORDER BY id DESC", conn
+        "SELECT id, machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken FROM breakdown_logs ORDER BY id DESC", conn
     )
 
     if not all_df.empty:
+        # ฟังก์ชันช่วยแยกข้อมูลประวัติเก่าที่มีข้อความรวมกันอยู่
+        def clean_data(row):
+            action = str(row['action_taken']) if row['action_taken'] is not None else ""
+            team = str(row['team_name']) if row['team_name'] is not None else ""
+            
+            if "ทีมที่แก้ไข:" in action and " | รายละเอียด:" in action:
+                parts = action.split(" | รายละเอียด: ")
+                extracted_team = parts[0].replace("ทีมที่แก้ไข: ", "").strip()
+                extracted_action = parts[1].strip() if len(parts) > 1 else ""
+                return pd.Series([extracted_team, extracted_action])
+            elif "ทีมที่แก้ไข:" in action:
+                extracted_team = action.replace("ทีมที่แก้ไข: ", "").strip()
+                return pd.Series([extracted_team, ""])
+            else:
+                return pd.Series([team, action])
+
+        all_df[['team_name', 'action_taken']] = all_df.apply(clean_data, axis=1)
+
         st.dataframe(all_df, use_container_width=True)
     else:
         st.write("ยังไม่มีข้อมูลในระบบ")
