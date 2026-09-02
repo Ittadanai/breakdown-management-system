@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS breakdown_logs (
     machine_name TEXT,
     issue_description TEXT,
     reported_by TEXT,
-    start_time TIMESTAMP,
-    end_time TIMESTAMP,
+    start_time TEXT,
+    end_time TEXT,
     downtime_minutes INTEGER,
     status TEXT,
     action_taken TEXT,
@@ -64,49 +64,48 @@ conn.commit()
 
 # --- 2. ฟังก์ชันจัดการข้อมูล ---
 def create_ticket(machine, issue, reporter):
-    start_time = datetime.datetime.now(THAILAND_TZ)
+    now_dt = datetime.datetime.now(THAILAND_TZ)
+    start_time_str = now_dt.strftime('%Y-%m-%d %H:%M')
+
     cursor.execute(
         """
         INSERT INTO breakdown_logs (machine_name, issue_description, reported_by, start_time, status)
         VALUES (?, ?, ?, ?, ?)
     """,
-        (machine, issue, reporter, start_time, "Pending"),
+        (machine, issue, reporter, start_time_str, "Pending"),
     )
     conn.commit()
-    ticket_id = cursor.lastrowid
 
     line_msg = (
         f"แจ้งงาน Breakdown ใหม่!\n"
         f"เครื่องจักร: {machine}\n"
         f"อาการชำรุด: {issue}\n"
         f"ผู้แจ้งงาน: {reporter}\n"
-        f"เวลาแจ้ง: {start_time.strftime('%Y-%m-%d %H:%M')}"
+        f"เวลาแจ้ง: {start_time_str}"
     )
     send_line_message(line_msg)
 
 
 def close_ticket(ticket_id, team_name, action_detail):
-    end_time = datetime.datetime.now(THAILAND_TZ)
+    now_dt = datetime.datetime.now(THAILAND_TZ)
+    end_time_str = now_dt.strftime('%Y-%m-%d %H:%M')
+
     cursor.execute(
         "SELECT machine_name, start_time FROM breakdown_logs WHERE id = ?",
         (ticket_id,),
     )
     row = cursor.fetchone()
     machine_name = row[0]
-    start_time_str = str(row[1])
+    start_time_val = str(row[1])
 
     try:
-        start_time = datetime.datetime.fromisoformat(start_time_str)
-    except ValueError:
-        start_time = datetime.datetime.strptime(
-            start_time_str.split(".")[0], "%Y-%m-%d %H:%M:%S"
-        )
-
-    if start_time.tzinfo is None:
-        start_time = start_time.replace(tzinfo=THAILAND_TZ)
-
-    duration = end_time - start_time
-    downtime_minutes = math.ceil(duration.total_seconds() / 60)
+        start_dt = datetime.datetime.strptime(start_time_val[:16], '%Y-%m-%d %H:%M')
+        duration = now_dt.replace(tzinfo=None) - start_dt
+        downtime_minutes = math.ceil(duration.total_seconds() / 60)
+        if downtime_minutes < 0:
+            downtime_minutes = 0
+    except Exception:
+        downtime_minutes = 0
 
     cursor.execute(
         """
@@ -114,7 +113,7 @@ def close_ticket(ticket_id, team_name, action_detail):
         SET end_time = ?, downtime_minutes = ?, status = ?, action_taken = ?, team_name = ?
         WHERE id = ?
     """,
-        (end_time, downtime_minutes, "Closed", action_detail, team_name, ticket_id),
+        (end_time_str, downtime_minutes, "Closed", action_detail, team_name, ticket_id),
     )
     conn.commit()
 
@@ -124,7 +123,7 @@ def close_ticket(ticket_id, team_name, action_detail):
         f"ทีมที่ทำการแก้ไข: {team_name}\n"
         f"วิธีการแก้ไข: {action_detail}\n"
         f"เวลาที่ใช้ทั้งหมด (Downtime): {downtime_minutes} นาที\n"
-        f"เวลาปิดงาน: {end_time.strftime('%Y-%m-%d %H:%M')}"
+        f"เวลาปิดงาน: {end_time_str}"
     )
     send_line_message(line_msg)
 
@@ -215,14 +214,10 @@ elif st.session_state.current_page == "pending":
         st.info("ไม่มีงาน Breakdown ค้างในระบบ")
     else:
         for idx, row in pending_df.iterrows():
-            try:
-                dt_obj = datetime.datetime.fromisoformat(str(row['start_time']))
-                formatted_start = dt_obj.strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                formatted_start = str(row['start_time'])[:16]
+            formatted_start = str(row['start_time'])[:16]
 
             with st.expander(
-                f"ID #{row['id']} - {row['machine_name']} (แจ้งเมื่อ: {formatted_start} โดย {row['reported_by']})"
+                f"{row['machine_name']} (แจ้งเมื่อ: {formatted_start} โดย {row['reported_by']})"
             ):
                 st.write(f"**อาการชำรุด:** {row['issue_description']}")
 
@@ -235,7 +230,7 @@ elif st.session_state.current_page == "pending":
                         if team_name and action_detail:
                             close_ticket(row["id"], team_name, action_detail)
                             st.success(
-                                f"ปิดงาน ID #{row['id']} เรียบร้อยแล้ว และส่ง LINE สรุปผลเข้ากลุ่มแล้ว"
+                                f"ปิดงาน {row['machine_name']} เรียบร้อยแล้ว และส่ง LINE สรุปผลเข้ากลุ่มแล้ว"
                             )
                             st.rerun()
                         else:
@@ -244,12 +239,20 @@ elif st.session_state.current_page == "pending":
 elif st.session_state.current_page == "history":
     st.title("Record Downtime")
 
+    # ไม่ดึง id ออกมาแสดงในตาราง history
     all_df = pd.read_sql_query(
-        "SELECT id, machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken FROM breakdown_logs ORDER BY id DESC", conn
+        "SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken FROM breakdown_logs ORDER BY id DESC", conn
     )
 
     if not all_df.empty:
-        # ฟังก์ชันช่วยแยกข้อมูลประวัติเก่าที่มีข้อความรวมกันอยู่
+        def clean_time_string(val):
+            if pd.isna(val) or not val:
+                return ""
+            return str(val)[:16]
+
+        all_df['start_time'] = all_df['start_time'].apply(clean_time_string)
+        all_df['end_time'] = all_df['end_time'].apply(clean_time_string)
+
         def clean_data(row):
             action = str(row['action_taken']) if row['action_taken'] is not None else ""
             team = str(row['team_name']) if row['team_name'] is not None else ""
