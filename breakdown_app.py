@@ -1,12 +1,12 @@
 import datetime
 from datetime import timezone, timedelta
 import math
-import sqlite3
 import threading
 import time
 import pandas as pd
 import requests
 import streamlit as st
+from sqlalchemy import create_engine, text
 
 # --- ตั้งค่า Timezone เป็นประเทศไทย (UTC+7) ---
 THAILAND_TZ = timezone(timedelta(hours=7))
@@ -58,43 +58,35 @@ def send_line_message(message_text):
         return False
 
 
-# --- 1. ตั้งค่าฐานข้อมูล SQLite ---
-def get_db_connection():
-    return sqlite3.connect("breakdown_db.db", check_same_thread=False)
+# --- 1. ตั้งค่าฐานข้อมูล Supabase (PostgreSQL) ผ่าน SQLAlchemy ---
+@st.cache_resource
+def get_db_engine():
+    db_url = st.secrets["postgres"]["url"]
+    return create_engine(db_url, pool_pre_ping=True)
 
+engine = get_db_engine()
 
-conn = get_db_connection()
-cursor = conn.cursor()
+# สร้างตาราง breakdown_logs บน Supabase อัตโนมัติหากยังไม่มี
+def init_db():
+    with engine.begin() as conn:
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS breakdown_logs (
+            id SERIAL PRIMARY KEY,
+            machine_name TEXT,
+            issue_description TEXT,
+            reported_by TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            downtime_minutes INTEGER,
+            status TEXT,
+            action_taken TEXT,
+            team_name TEXT,
+            effect TEXT,
+            last_notified_step INTEGER DEFAULT 0
+        );
+        """))
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS breakdown_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    machine_name TEXT,
-    issue_description TEXT,
-    reported_by TEXT,
-    start_time TEXT,
-    end_time TEXT,
-    downtime_minutes INTEGER,
-    status TEXT,
-    action_taken TEXT,
-    team_name TEXT,
-    effect TEXT,
-    last_notified_step INTEGER DEFAULT 0
-)
-""")
-
-# อัปเดตคอลัมน์เก่าหากยังไม่มี
-for col_def in [
-    "team_name TEXT",
-    "effect TEXT",
-    "last_notified_step INTEGER DEFAULT 0",
-]:
-    try:
-        cursor.execute(f"ALTER TABLE breakdown_logs ADD COLUMN {col_def}")
-    except sqlite3.OperationalError:
-        pass
-
-conn.commit()
+init_db()
 
 
 # --- 2. ฟังก์ชันตรวจสอบและแจ้งเตือนงาน Breakdown ที่ค้างอยู่ (Background Worker) ---
@@ -102,74 +94,70 @@ def check_pending_breakdowns():
     """ฟังก์ชันเบื้องหลัง คอยเช็กงานค้างเพื่อส่งเตือน 30 นาที, 1 ชม. และทุกๆ 1 ชม."""
     while True:
         try:
-            bg_conn = get_db_connection()
-            bg_cursor = bg_conn.cursor()
+            with engine.connect() as bg_conn:
+                result = bg_conn.execute(text(
+                    "SELECT id, machine_name, issue_description, reported_by, start_time, effect, last_notified_step FROM breakdown_logs WHERE status = 'Pending'"
+                ))
+                pending_rows = result.fetchall()
 
-            bg_cursor.execute(
-                "SELECT id, machine_name, issue_description, reported_by, start_time, effect, last_notified_step FROM breakdown_logs WHERE status = 'Pending'"
-            )
-            pending_rows = bg_cursor.fetchall()
+                now_dt = datetime.datetime.now(THAILAND_TZ)
 
-            now_dt = datetime.datetime.now(THAILAND_TZ)
+                for row in pending_rows:
+                    (
+                        ticket_id,
+                        machine,
+                        issue,
+                        reporter,
+                        start_time_str,
+                        effect,
+                        last_step,
+                    ) = row
+                    if last_step is None:
+                        last_step = 0
 
-            for row in pending_rows:
-                (
-                    ticket_id,
-                    machine,
-                    issue,
-                    reporter,
-                    start_time_str,
-                    effect,
-                    last_step,
-                ) = row
-                if last_step is None:
-                    last_step = 0
-
-                try:
-                    start_dt = datetime.datetime.strptime(
-                        start_time_str[:16], "%Y-%m-%d %H:%M"
-                    ).replace(tzinfo=THAILAND_TZ)
-                    elapsed_minutes = math.floor(
-                        (now_dt - start_dt).total_seconds() / 60
-                    )
-
-                    target_step = 0
-                    reminder_label = ""
-
-                    # กำหนดเงื่อนไขการแจ้งเตือน
-                    if elapsed_minutes >= 30 and last_step < 1 and elapsed_minutes < 60:
-                        target_step = 1
-                        reminder_label = "แจ้งเตือน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 30 นาที!"
-                    elif elapsed_minutes >= 60:
-                        # คำนวณรอบชั่วโมง (60 นาที = step 2, 120 นาที = step 3, 180 นาที = step 4 ...)
-                        hours_passed = elapsed_minutes // 60
-                        current_calculated_step = 1 + hours_passed
-
-                        if current_calculated_step > last_step:
-                            target_step = current_calculated_step
-                            reminder_label = f"แจ้งเตือนด่วน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว {hours_passed} ชั่วโมง!"
-
-                    # หากเข้าเงื่อนไขส่งเตือนรอบใหม่
-                    if target_step > 0 and reminder_label:
-                        line_msg = (
-                            f"{reminder_label}\n"
-                            f"Process: {machine}\n"
-                            f"Problem Detail: {issue}\n"
-                            f"Effect: {effect if effect else '-'}\n"
-                            f"เวลาแจ้งเริ่มต้น: {start_time_str}"
+                    try:
+                        start_dt = datetime.datetime.strptime(
+                            str(start_time_str)[:16], "%Y-%m-%d %H:%M"
+                        ).replace(tzinfo=THAILAND_TZ)
+                        elapsed_minutes = math.floor(
+                            (now_dt - start_dt).total_seconds() / 60
                         )
 
-                        if send_line_message(line_msg):
-                            bg_cursor.execute(
-                                "UPDATE breakdown_logs SET last_notified_step = ? WHERE id = ?",
-                                (target_step, ticket_id),
+                        target_step = 0
+                        reminder_label = ""
+
+                        # กำหนดเงื่อนไขการแจ้งเตือน
+                        if elapsed_minutes >= 30 and last_step < 1 and elapsed_minutes < 60:
+                            target_step = 1
+                            reminder_label = "แจ้งเตือน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 30 นาที!"
+                        elif elapsed_minutes >= 60:
+                            hours_passed = elapsed_minutes // 60
+                            current_calculated_step = 1 + hours_passed
+
+                            if current_calculated_step > last_step:
+                                target_step = current_calculated_step
+                                reminder_label = f"แจ้งเตือนด่วน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว {hours_passed} ชั่วโมง!"
+
+                        # หากเข้าเงื่อนไขส่งเตือนรอบใหม่
+                        if target_step > 0 and reminder_label:
+                            line_msg = (
+                                f"{reminder_label}\n"
+                                f"Process: {machine}\n"
+                                f"Problem Detail: {issue}\n"
+                                f"Effect: {effect if effect else '-'}\n"
+                                f"เวลาแจ้งเริ่มต้น: {start_time_str}"
                             )
-                            bg_conn.commit()
 
-                except Exception as ex:
-                    print(f"Error processing ticket {ticket_id}: {ex}")
+                            if send_line_message(line_msg):
+                                with engine.begin() as update_conn:
+                                    update_conn.execute(
+                                        text("UPDATE breakdown_logs SET last_notified_step = :target_step WHERE id = :ticket_id"),
+                                        {"target_step": target_step, "ticket_id": ticket_id}
+                                    )
 
-            bg_conn.close()
+                    except Exception as ex:
+                        print(f"Error processing ticket {ticket_id}: {ex}")
+
         except Exception as e:
             print(f"Error in background checker: {e}")
 
@@ -195,14 +183,20 @@ def create_ticket(machine, issue, reporter, effect):
     now_dt = datetime.datetime.now(THAILAND_TZ)
     start_time_str = now_dt.strftime("%Y-%m-%d %H:%M")
 
-    cursor.execute(
-        """
-        INSERT INTO breakdown_logs (machine_name, issue_description, reported_by, start_time, status, effect, last_notified_step)
-        VALUES (?, ?, ?, ?, ?, ?, 0)
-    """,
-        (machine, issue, reporter, start_time_str, "Pending", effect),
-    )
-    conn.commit()
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+            INSERT INTO breakdown_logs (machine_name, issue_description, reported_by, start_time, status, effect, last_notified_step)
+            VALUES (:machine, :issue, :reporter, :start_time, 'Pending', :effect, 0)
+            """),
+            {
+                "machine": machine,
+                "issue": issue,
+                "reporter": reporter,
+                "start_time": start_time_str,
+                "effect": effect,
+            }
+        )
 
     line_msg = (
         f"แจ้งงาน Breakdown ใหม่!\n"
@@ -219,11 +213,13 @@ def close_ticket(ticket_id, team_name, action_detail):
     now_dt = datetime.datetime.now(THAILAND_TZ)
     end_time_str = now_dt.strftime("%Y-%m-%d %H:%M")
 
-    cursor.execute(
-        "SELECT machine_name, start_time FROM breakdown_logs WHERE id = ?",
-        (ticket_id,),
-    )
-    row = cursor.fetchone()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT machine_name, start_time FROM breakdown_logs WHERE id = :ticket_id"),
+            {"ticket_id": ticket_id}
+        )
+        row = result.fetchone()
+
     machine_name = row[0]
     start_time_val = str(row[1])
 
@@ -238,22 +234,21 @@ def close_ticket(ticket_id, team_name, action_detail):
     except Exception:
         downtime_minutes = 0
 
-    cursor.execute(
-        """
-        UPDATE breakdown_logs 
-        SET end_time = ?, downtime_minutes = ?, status = ?, action_taken = ?, team_name = ?
-        WHERE id = ?
-    """,
-        (
-            end_time_str,
-            downtime_minutes,
-            "Closed",
-            action_detail,
-            team_name,
-            ticket_id,
-        ),
-    )
-    conn.commit()
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+            UPDATE breakdown_logs 
+            SET end_time = :end_time, downtime_minutes = :downtime, status = 'Closed', action_taken = :action, team_name = :team
+            WHERE id = :ticket_id
+            """),
+            {
+                "end_time": end_time_str,
+                "downtime": downtime_minutes,
+                "action": action_detail,
+                "team": team_name,
+                "ticket_id": ticket_id,
+            }
+        )
 
     line_msg = (
         f"ปิดงาน Breakdown แล้ว\n"
@@ -305,12 +300,8 @@ if st.session_state.current_page == "home":
     st.title("ระบบบริหารจัดการงาน Breakdown")
     st.write("เลือกรายการเมนูด้านบนเพื่อเริ่มต้นใช้งาน")
 
-    pending_count = pd.read_sql_query(
-        "SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Pending'", conn
-    ).iloc[0, 0]
-    closed_count = pd.read_sql_query(
-        "SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Closed'", conn
-    ).iloc[0, 0]
+    pending_count = pd.read_sql("SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Pending'", con=engine).iloc[0, 0]
+    closed_count = pd.read_sql("SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Closed'", con=engine).iloc[0, 0]
 
     col1, col2 = st.columns(2)
     col1.metric("งานกำลังดำเนินการ (Pending)", f"{pending_count} รายการ")
@@ -378,9 +369,9 @@ elif st.session_state.current_page == "report":
 elif st.session_state.current_page == "pending":
     st.title("รายการ Breakdown ที่กำลังดำเนินการ")
 
-    pending_df = pd.read_sql_query(
+    pending_df = pd.read_sql(
         "SELECT id, machine_name, issue_description, reported_by, start_time, effect FROM breakdown_logs WHERE status = 'Pending'",
-        conn,
+        con=engine,
     )
 
     if pending_df.empty:
@@ -424,9 +415,9 @@ elif st.session_state.current_page == "pending":
 elif st.session_state.current_page == "history":
     st.title("Record Downtime")
 
-    all_df = pd.read_sql_query(
+    all_df = pd.read_sql(
         "SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC",
-        conn,
+        con=engine,
     )
 
     if not all_df.empty:
