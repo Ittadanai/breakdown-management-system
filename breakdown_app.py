@@ -330,7 +330,11 @@ if st.session_state.current_page == "home":
 elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
 
-    # ปรับใช้ Session State และ Dynamic UI นอก Form เพื่อให้โชว์ช่องระบุทันทีที่เลือก "อื่นๆ"
+    # แสดงข้อความ Success ค้างไว้หากเพิ่งกดบันทึกสำเร็จ
+    if st.session_state.get("show_success", False):
+        st.success(st.session_state.get("success_msg", ""))
+        st.session_state["show_success"] = False
+
     selected_process = st.selectbox("Process *", PROCESS_OPTIONS, key="rep_process")
     other_process_detail = ""
     if selected_process == "อื่นๆระบุ (Other)":
@@ -362,9 +366,22 @@ elif st.session_state.current_page == "report":
                 final_process, issue_description.strip(), reported_by.strip(), final_effect
             )
             now_th = datetime.datetime.now(THAILAND_TZ)
-            st.success(
-                f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
-            )
+            
+            # เก็บข้อความ Success ไว้ใน Session State
+            st.session_state["show_success"] = True
+            st.session_state["success_msg"] = f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
+
+            # ล้างค่าในฟอร์ม
+            st.session_state["rep_process"] = PROCESS_OPTIONS[0]
+            st.session_state["rep_by"] = ""
+            st.session_state["rep_issue"] = ""
+            st.session_state["rep_effect"] = EFFECT_OPTIONS[0]
+            if "rep_process_other" in st.session_state:
+                st.session_state["rep_process_other"] = ""
+            if "rep_effect_other" in st.session_state:
+                st.session_state["rep_effect_other"] = ""
+
+            st.rerun()
         else:
             st.error(
                 "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
