@@ -330,53 +330,45 @@ if st.session_state.current_page == "home":
 elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
 
-    with st.form("breakdown_report_form", clear_on_submit=True):
-        selected_process = st.selectbox("Process *", PROCESS_OPTIONS)
-        
-        # แสดงช่องด้านล่างเฉพาะเมื่อเลือก "อื่นๆระบุ (Other)"
-        other_process_detail = ""
+    # ปรับใช้ Session State และ Dynamic UI นอก Form เพื่อให้โชว์ช่องระบุทันทีที่เลือก "อื่นๆ"
+    selected_process = st.selectbox("Process *", PROCESS_OPTIONS, key="rep_process")
+    other_process_detail = ""
+    if selected_process == "อื่นๆระบุ (Other)":
+        other_process_detail = st.text_input("ระบุรายละเอียด Process อื่นๆ *", key="rep_process_other")
+
+    reported_by = st.text_input("ชื่อผู้แจ้งปัญหา (info. by) *", key="rep_by")
+    issue_description = st.text_area("ปัญหาที่พบ (Problem Detail) *", key="rep_issue")
+
+    selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS, key="rep_effect")
+    other_effect_detail = ""
+    if selected_effect == "อื่นๆระบุ (Other)":
+        other_effect_detail = st.text_input("ระบุรายละเอียด Effect อื่นๆ *", key="rep_effect_other")
+
+    if st.button("บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"):
+        final_process = ""
         if selected_process == "อื่นๆระบุ (Other)":
-            other_process_detail = st.text_input("ระบุรายละเอียด Process อื่นๆ *")
+            final_process = other_process_detail.strip()
+        elif selected_process != PROCESS_OPTIONS[0]:
+            final_process = selected_process
 
-        reported_by = st.text_input("ชื่อผู้แจ้งปัญหา (info. by) *")
-        issue_description = st.text_area("ปัญหาที่พบ (Problem Detail) *")
-
-        selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS)
-        
-        # แสดงช่องด้านล่างเฉพาะเมื่อเลือก "อื่นๆระบุ (Other)"
-        other_effect_detail = ""
+        final_effect = ""
         if selected_effect == "อื่นๆระบุ (Other)":
-            other_effect_detail = st.text_input("ระบุรายละเอียด Effect อื่นๆ *")
+            final_effect = other_effect_detail.strip()
+        elif selected_effect != EFFECT_OPTIONS[0]:
+            final_effect = selected_effect
 
-        submitted = st.form_submit_button(
-            "บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"
-        )
-
-        if submitted:
-            final_process = ""
-            if selected_process == "อื่นๆระบุ (Other)":
-                final_process = other_process_detail.strip()
-            elif selected_process != PROCESS_OPTIONS[0]:
-                final_process = selected_process
-
-            final_effect = ""
-            if selected_effect == "อื่นๆระบุ (Other)":
-                final_effect = other_effect_detail.strip()
-            elif selected_effect != EFFECT_OPTIONS[0]:
-                final_effect = selected_effect
-
-            if final_process and reported_by.strip() and issue_description.strip() and final_effect:
-                create_ticket(
-                    final_process, issue_description.strip(), reported_by.strip(), final_effect
-                )
-                now_th = datetime.datetime.now(THAILAND_TZ)
-                st.success(
-                    f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
-                )
-            else:
-                st.error(
-                    "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
-                )
+        if final_process and reported_by.strip() and issue_description.strip() and final_effect:
+            create_ticket(
+                final_process, issue_description.strip(), reported_by.strip(), final_effect
+            )
+            now_th = datetime.datetime.now(THAILAND_TZ)
+            st.success(
+                f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
+            )
+        else:
+            st.error(
+                "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
+            )
 
 elif st.session_state.current_page == "pending":
     st.title("รายการ Breakdown ที่กำลังดำเนินการ")
@@ -412,7 +404,6 @@ elif st.session_state.current_page == "pending":
                     key=f"team_select_{row['id']}"
                 )
 
-                # แสดงช่องระบุทีมด้านล่างเฉพาะเมื่อเลือก "อื่นๆระบุ (Other)"
                 other_team_detail = ""
                 if selected_team == "อื่นๆระบุ (Other)":
                     other_team_detail = st.text_input(
