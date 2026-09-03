@@ -281,6 +281,18 @@ st.set_page_config(page_title="Breakdown Management System", layout="wide")
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 
+# ตรวจสอบ Flag สำหรับการล้างค่าในฟอร์ม (ทำงานก่อนการสร้าง Widget เพื่อป้องกัน Error)
+if st.session_state.get("clear_report_form", False):
+    st.session_state["rep_process"] = PROCESS_OPTIONS[0]
+    st.session_state["rep_by"] = ""
+    st.session_state["rep_issue"] = ""
+    st.session_state["rep_effect"] = EFFECT_OPTIONS[0]
+    if "rep_process_other" in st.session_state:
+        st.session_state["rep_process_other"] = ""
+    if "rep_effect_other" in st.session_state:
+        st.session_state["rep_effect_other"] = ""
+    st.session_state["clear_report_form"] = False
+
 
 def navigate_to(page_name):
     st.session_state.current_page = page_name
@@ -330,7 +342,7 @@ if st.session_state.current_page == "home":
 elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
 
-    # แสดงข้อความ Success ค้างไว้หากเพิ่งกดบันทึกสำเร็จ
+    # แสดงข้อความแจ้งเตือนเมื่อบันทึกสำเร็จ
     if st.session_state.get("show_success", False):
         st.success(st.session_state.get("success_msg", ""))
         st.session_state["show_success"] = False
@@ -367,19 +379,12 @@ elif st.session_state.current_page == "report":
             )
             now_th = datetime.datetime.now(THAILAND_TZ)
             
-            # เก็บข้อความ Success ไว้ใน Session State
+            # บันทึกสถานะเพื่อแสดงแจ้งเตือนความสำเร็จในรอบถัดไป
             st.session_state["show_success"] = True
             st.session_state["success_msg"] = f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
 
-            # ล้างค่าในฟอร์ม
-            st.session_state["rep_process"] = PROCESS_OPTIONS[0]
-            st.session_state["rep_by"] = ""
-            st.session_state["rep_issue"] = ""
-            st.session_state["rep_effect"] = EFFECT_OPTIONS[0]
-            if "rep_process_other" in st.session_state:
-                st.session_state["rep_process_other"] = ""
-            if "rep_effect_other" in st.session_state:
-                st.session_state["rep_effect_other"] = ""
+            # ตั้ง Flag เพื่อให้ทำการResetค่าในรอบถัดไป ก่อนสร้าง Widget
+            st.session_state["clear_report_form"] = True
 
             st.rerun()
         else:
