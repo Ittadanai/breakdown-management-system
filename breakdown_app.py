@@ -330,12 +330,10 @@ if st.session_state.current_page == "home":
 elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
 
-    # ใช้ st.form ร่วมกับ clear_on_submit=True เพื่อล้างฟอร์มเมื่อบันทึกสำเร็จโดยไม่เกิด error
     with st.form("breakdown_report_form", clear_on_submit=True):
         selected_process = st.selectbox("Process *", PROCESS_OPTIONS)
         other_process_detail = st.text_input(
-            "ระบุรายละเอียด Process อื่นๆ (กรณีเลือก อื่นๆระบุ)",
-            placeholder="เช่น Sealer, Inspection, Wax",
+            "ระบุรายละเอียด Process อื่นๆ (กรณีเลือก อื่นๆระบุ)"
         )
 
         reported_by = st.text_input("ชื่อผู้แจ้งปัญหา (info. by) *")
@@ -343,8 +341,7 @@ elif st.session_state.current_page == "report":
 
         selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS)
         other_effect_detail = st.text_input(
-            "ระบุรายละเอียด Effect อื่นๆ (กรณีเลือก อื่นๆระบุ)",
-            placeholder="เช่น ปรับเปลี่ยนแผนการพ่นสี",
+            "ระบุรายละเอียด Effect อื่นๆ (กรณีเลือก อื่นๆระบุ)"
         )
 
         submitted = st.form_submit_button(
@@ -402,7 +399,6 @@ elif st.session_state.current_page == "pending":
 
                 solver_name = st.text_input(
                     "ชื่อผู้แก้ไข (Name) *",
-                    placeholder="เช่น สมชาย ใจดี",
                     key=f"solver_{row['id']}"
                 )
 
@@ -416,13 +412,11 @@ elif st.session_state.current_page == "pending":
                 if selected_team == "อื่นๆระบุ (Other)":
                     other_team_detail = st.text_input(
                         "ระบุรายละเอียดทีมอื่นๆ *",
-                        placeholder="เช่น Subcontractor, External Vendor",
                         key=f"other_team_{row['id']}"
                     )
 
                 action_detail = st.text_area(
                     "รายละเอียดการแก้ไข (Detail) *",
-                    placeholder="เช่น เปลี่ยนซีลกระบอกสูบ, รีเซ็ตโปรแกรมการพ่นสี",
                     key=f"action_{row['id']}"
                 )
 
