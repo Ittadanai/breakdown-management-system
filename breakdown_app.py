@@ -8,6 +8,10 @@ import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
+from streamlit_js_eval import streamlit_js_eval
+
+# --- ตั้งค่ารหัสผ่านเข้าใช้งานเว็บ ---
+APP_PASSWORD = "1234"  # <-- เปลี่ยนรหัสผ่านที่ต้องการตรงนี้
 
 # --- ตั้งค่า Timezone เป็นประเทศไทย (UTC+7) ---
 THAILAND_TZ = timezone(timedelta(hours=7))
@@ -275,9 +279,60 @@ def close_ticket(ticket_id, solver_name, team_name, action_detail):
     send_line_message(line_msg)
 
 
-# --- 4. ส่วน Navigation & UI ---
+# --- 4. ส่วน Navigation, Authentication & UI ---
 st.set_page_config(page_title="Breakdown Management System", layout="wide")
 
+# ตรวจสอบสถานะการเข้าสู่ระบบ
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+# หน้า Login ตรวจสอบรหัสผ่าน
+if not st.session_state.authenticated:
+    st.markdown("<h2 style='text-align: center;'>🔒 เข้าสู่ระบบ Breakdown Management System</h2>", unsafe_allow_html=True)
+    st.write("")
+    
+    col_a, col_b, col_c = st.columns([1, 2, 1])
+    with col_b:
+        pwd_input = st.text_input("กรุณากรอกรหัสผ่านเพื่อเข้าใช้งาน", type="password")
+        if st.button("เข้าสู่ระบบ (Login)", use_container_width=True, type="primary"):
+            if pwd_input == APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.success("เข้าสู่ระบบสำเร็จ!")
+                st.rerun()
+            else:
+                st.error("รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง")
+    st.stop()
+
+# --- ระบบตรวจจับ Inactivity 5 นาที (Auto Logout) ---
+is_idle = streamlit_js_eval(
+    js_expressions="""
+    (() => {
+        if (window.idleTimer) return window.isIdle || false;
+        window.isIdle = false;
+        let timeout;
+        const resetTimer = () => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                window.isIdle = true;
+            }, 300000); // 300,000 ms = 5 นาที
+        };
+        ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(evt => {
+            window.addEventListener(evt, resetTimer, true);
+        });
+        resetTimer();
+        window.idleTimer = true;
+        return false;
+    })()
+    """,
+    key="auto_logout_eval"
+)
+
+if is_idle:
+    st.session_state.authenticated = False
+    st.warning("คุณไม่ได้ใช้งานเกิน 5 นาที ระบบได้ทำการออกจากระบบอัตโนมัติ")
+    st.rerun()
+
+# --- เมนูเมื่อผ่านการล็อกอินแล้ว ---
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 
@@ -298,7 +353,7 @@ def navigate_to(page_name):
     st.session_state.current_page = page_name
 
 
-nav_col1, nav_col2, nav_col3, nav_col4 = st.columns(4)
+nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([2, 2, 2, 2, 1])
 
 with nav_col1:
     if st.button("หน้าแรก", use_container_width=True):
@@ -318,6 +373,11 @@ with nav_col3:
 with nav_col4:
     if st.button("ประวัติและสรุปผล", use_container_width=True):
         navigate_to("history")
+        st.rerun()
+
+with nav_col5:
+    if st.button("ออกจากระบบ", use_container_width=True):
+        st.session_state.authenticated = False
         st.rerun()
 
 st.divider()
@@ -479,7 +539,6 @@ elif st.session_state.current_page == "history":
             lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else ""
         )
 
-        # แก้ไขชื่อคอลัมน์ solver_name เป็น Correct by (Name)
         rename_dict = {
             "machine_name": "Process",
             "issue_description": "Problem Detail",
