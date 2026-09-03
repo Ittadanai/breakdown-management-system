@@ -58,11 +58,20 @@ def send_line_message(message_text):
         return False
 
 
+from sqlalchemy.engine import URL
+
 # --- 1. ตั้งค่าฐานข้อมูล Supabase (PostgreSQL) ผ่าน SQLAlchemy ---
 @st.cache_resource
 def get_db_engine():
-    db_url = st.secrets["postgres"]["url"]
-    return create_engine(db_url, pool_pre_ping=True)
+    connection_url = URL.create(
+        drivername="postgresql+psycopg2",
+        username=st.secrets["postgres"]["user"],
+        password=st.secrets["postgres"]["password"],
+        host=st.secrets["postgres"]["host"],
+        port=int(st.secrets["postgres"]["port"]),
+        database=st.secrets["postgres"]["dbname"],
+    )
+    return create_engine(connection_url, pool_pre_ping=True)
 
 engine = get_db_engine()
 
