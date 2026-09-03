@@ -308,8 +308,9 @@ if st.session_state.current_page == "home":
     st.title("ระบบบริหารจัดการงาน Breakdown")
     st.write("เลือกรายการเมนูด้านบนเพื่อเริ่มต้นใช้งาน")
 
-    pending_count = pd.read_sql(text("SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Pending'"), con=engine).iloc[0, 0]
-    closed_count = pd.read_sql(text("SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Closed'"), con=engine).iloc[0, 0]
+    with engine.connect() as conn:
+        pending_count = pd.read_sql(text("SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Pending'"), con=conn).iloc[0, 0]
+        closed_count = pd.read_sql(text("SELECT COUNT(*) FROM breakdown_logs WHERE status = 'Closed'"), con=conn).iloc[0, 0]
 
     col1, col2 = st.columns(2)
     col1.metric("งานกำลังดำเนินการ (Pending)", f"{pending_count} รายการ")
@@ -377,10 +378,11 @@ elif st.session_state.current_page == "report":
 elif st.session_state.current_page == "pending":
     st.title("รายการ Breakdown ที่กำลังดำเนินการ")
 
-    pending_df = pd.read_sql(
-        text("SELECT id, machine_name, issue_description, reported_by, start_time, effect FROM breakdown_logs WHERE status = 'Pending'"),
-        con=engine,
-    )
+    with engine.connect() as conn:
+        pending_df = pd.read_sql(
+            text("SELECT id, machine_name, issue_description, reported_by, start_time, effect FROM breakdown_logs WHERE status = 'Pending'"),
+            con=conn,
+        )
 
     if pending_df.empty:
         st.info("ไม่มีงาน Breakdown ค้างในระบบ")
@@ -423,10 +425,11 @@ elif st.session_state.current_page == "pending":
 elif st.session_state.current_page == "history":
     st.title("Record Downtime")
 
-    all_df = pd.read_sql(
-        text("SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC"),
-        con=engine,
-    )
+    with engine.connect() as conn:
+        all_df = pd.read_sql(
+            text("SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC"),
+            con=conn,
+        )
 
     if not all_df.empty:
         all_df["Date"] = all_df["start_time"].apply(
