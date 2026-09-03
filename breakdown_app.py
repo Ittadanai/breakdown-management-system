@@ -2,6 +2,8 @@ import datetime
 from datetime import timezone, timedelta
 import math
 import sqlite3
+import threading
+import time
 import pandas as pd
 import requests
 import streamlit as st
@@ -23,7 +25,7 @@ PROCESS_OPTIONS = [
     "Moist sand",
     "Top coat",
     "T-UP",
-    "Plastic"
+    "Plastic",
 ]
 
 # --- กำหนดตัวเลือกสำหรับ Effect Dropdown ---
@@ -32,7 +34,7 @@ EFFECT_OPTIONS = [
     "ไม่หยุดการผลิต (Production will not Stop)",
     "หยุดการผลิต (Production Stop)",
     "รถเสียหาย (Body NCR)",
-    "อื่นๆระบุ (Other)"
+    "อื่นๆระบุ (Other)",
 ]
 
 
@@ -49,7 +51,7 @@ def send_line_message(message_text):
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         return response.status_code == 200
     except Exception as e:
         print(f"Error sending LINE message: {e}")
@@ -57,7 +59,11 @@ def send_line_message(message_text):
 
 
 # --- 1. ตั้งค่าฐานข้อมูล SQLite ---
-conn = sqlite3.connect("breakdown_db.db", check_same_thread=False)
+def get_db_connection():
+    return sqlite3.connect("breakdown_db.db", check_same_thread=False)
+
+
+conn = get_db_connection()
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -72,32 +78,127 @@ CREATE TABLE IF NOT EXISTS breakdown_logs (
     status TEXT,
     action_taken TEXT,
     team_name TEXT,
-    effect TEXT
+    effect TEXT,
+    last_notified_step INTEGER DEFAULT 0
 )
 """)
 
-try:
-    cursor.execute("ALTER TABLE breakdown_logs ADD COLUMN team_name TEXT")
-except sqlite3.OperationalError:
-    pass
-
-try:
-    cursor.execute("ALTER TABLE breakdown_logs ADD COLUMN effect TEXT")
-except sqlite3.OperationalError:
-    pass
+# อัปเดตคอลัมน์เก่าหากยังไม่มี
+for col_def in [
+    "team_name TEXT",
+    "effect TEXT",
+    "last_notified_step INTEGER DEFAULT 0",
+]:
+    try:
+        cursor.execute(f"ALTER TABLE breakdown_logs ADD COLUMN {col_def}")
+    except sqlite3.OperationalError:
+        pass
 
 conn.commit()
 
 
-# --- 2. ฟังก์ชันจัดการข้อมูล ---
+# --- 2. ฟังก์ชันตรวจสอบและแจ้งเตือนงาน Breakdown ที่ค้างอยู่ (Background Worker) ---
+def check_pending_breakdowns():
+    """ฟังก์ชันเบื้องหลัง คอยเช็กงานค้างเพื่อส่งเตือน 30 นาที, 1 ชม. และทุกๆ 1 ชม."""
+    while True:
+        try:
+            bg_conn = get_db_connection()
+            bg_cursor = bg_conn.cursor()
+
+            bg_cursor.execute(
+                "SELECT id, machine_name, issue_description, reported_by, start_time, effect, last_notified_step FROM breakdown_logs WHERE status = 'Pending'"
+            )
+            pending_rows = bg_cursor.fetchall()
+
+            now_dt = datetime.datetime.now(THAILAND_TZ)
+
+            for row in pending_rows:
+                (
+                    ticket_id,
+                    machine,
+                    issue,
+                    reporter,
+                    start_time_str,
+                    effect,
+                    last_step,
+                ) = row
+                if last_step is None:
+                    last_step = 0
+
+                try:
+                    start_dt = datetime.datetime.strptime(
+                        start_time_str[:16], "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=THAILAND_TZ)
+                    elapsed_minutes = math.floor(
+                        (now_dt - start_dt).total_seconds() / 60
+                    )
+
+                    target_step = 0
+                    reminder_label = ""
+
+                    # กำหนดเงื่อนไขการแจ้งเตือน
+                    if elapsed_minutes >= 30 and last_step < 1 and elapsed_minutes < 60:
+                        target_step = 1
+                        reminder_label = "แจ้งเตือน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 30 นาที!"
+                    elif elapsed_minutes >= 60:
+                        # คำนวณรอบชั่วโมง (60 นาที = step 2, 120 นาที = step 3, 180 นาที = step 4 ...)
+                        hours_passed = elapsed_minutes // 60
+                        current_calculated_step = 1 + hours_passed
+
+                        if current_calculated_step > last_step:
+                            target_step = current_calculated_step
+                            reminder_label = f"แจ้งเตือนด่วน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว {hours_passed} ชั่วโมง!"
+
+                    # หากเข้าเงื่อนไขส่งเตือนรอบใหม่
+                    if target_step > 0 and reminder_label:
+                        line_msg = (
+                            f"{reminder_label}\n"
+                            f"Process: {machine}\n"
+                            f"Problem Detail: {issue}\n"
+                            f"Effect: {effect if effect else '-'}\n"
+                            f"เวลาแจ้งเริ่มต้น: {start_time_str}"
+                        )
+
+                        if send_line_message(line_msg):
+                            bg_cursor.execute(
+                                "UPDATE breakdown_logs SET last_notified_step = ? WHERE id = ?",
+                                (target_step, ticket_id),
+                            )
+                            bg_conn.commit()
+
+                except Exception as ex:
+                    print(f"Error processing ticket {ticket_id}: {ex}")
+
+            bg_conn.close()
+        except Exception as e:
+            print(f"Error in background checker: {e}")
+
+        # เช็กทุกๆ 60 วินาที
+        time.sleep(60)
+
+
+# เริ่มการทำงานเบื้องหลัง (Background Thread) เพียงครั้งเดียว
+if not any(
+    thread.name == "BreakdownReminderThread"
+    for thread in threading.enumerate()
+):
+    reminder_thread = threading.Thread(
+        target=check_pending_breakdowns,
+        name="BreakdownReminderThread",
+        daemon=True,
+    )
+    reminder_thread.start()
+
+
+# --- 3. ฟังก์ชันจัดการข้อมูลหลัก ---
 def create_ticket(machine, issue, reporter, effect):
     now_dt = datetime.datetime.now(THAILAND_TZ)
-    start_time_str = now_dt.strftime('%Y-%m-%d %H:%M')
+    start_time_str = now_dt.strftime("%Y-%m-%d %H:%M")
 
     cursor.execute(
         """
-        INSERT INTO breakdown_logs (machine_name, issue_description, reported_by, start_time, status, effect)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO breakdown_logs (machine_name, issue_description, reported_by, start_time, status, effect, last_notified_step)
+        VALUES (?, ?, ?, ?, ?, ?, 0)
     """,
         (machine, issue, reporter, start_time_str, "Pending", effect),
     )
@@ -106,17 +207,17 @@ def create_ticket(machine, issue, reporter, effect):
     line_msg = (
         f"แจ้งงาน Breakdown ใหม่!\n"
         f"Process: {machine}\n"
-        f"Problem Detail: {issue}\n"
-        f"Effect: {effect}\n"
-        f"Info. by: {reporter}\n"
-        f"Start time: {start_time_str}"
+        f"ปัญหาที่พบ (Problem Detail): {issue}\n"
+        f"ผลกระทบ (Effect): {effect}\n"
+        f"ผู้แจ้งปัญหา (info. by): {reporter}\n"
+        f"เวลาแจ้ง: {start_time_str}"
     )
     send_line_message(line_msg)
 
 
 def close_ticket(ticket_id, team_name, action_detail):
     now_dt = datetime.datetime.now(THAILAND_TZ)
-    end_time_str = now_dt.strftime('%Y-%m-%d %H:%M')
+    end_time_str = now_dt.strftime("%Y-%m-%d %H:%M")
 
     cursor.execute(
         "SELECT machine_name, start_time FROM breakdown_logs WHERE id = ?",
@@ -127,7 +228,9 @@ def close_ticket(ticket_id, team_name, action_detail):
     start_time_val = str(row[1])
 
     try:
-        start_dt = datetime.datetime.strptime(start_time_val[:16], '%Y-%m-%d %H:%M')
+        start_dt = datetime.datetime.strptime(
+            start_time_val[:16], "%Y-%m-%d %H:%M"
+        )
         duration = now_dt.replace(tzinfo=None) - start_dt
         downtime_minutes = math.ceil(duration.total_seconds() / 60)
         if downtime_minutes < 0:
@@ -141,22 +244,29 @@ def close_ticket(ticket_id, team_name, action_detail):
         SET end_time = ?, downtime_minutes = ?, status = ?, action_taken = ?, team_name = ?
         WHERE id = ?
     """,
-        (end_time_str, downtime_minutes, "Closed", action_detail, team_name, ticket_id),
+        (
+            end_time_str,
+            downtime_minutes,
+            "Closed",
+            action_detail,
+            team_name,
+            ticket_id,
+        ),
     )
     conn.commit()
 
     line_msg = (
         f"ปิดงาน Breakdown แล้ว\n"
         f"Process: {machine_name}\n"
-        f"Correct by: {team_name}\n"
-        f"Detail: {action_detail}\n"
-        f"Downtime: {downtime_minutes} นาที\n"
-        f"Finish time: {end_time_str}"
+        f"ทีมที่ทำการแก้ไข: {team_name}\n"
+        f"วิธีการแก้ไข: {action_detail}\n"
+        f"เวลาที่ใช้ทั้งหมด (Downtime): {downtime_minutes} นาที\n"
+        f"เวลาปิดงาน: {end_time_str}"
     )
     send_line_message(line_msg)
 
 
-# --- 3. ส่วน Navigation & UI ---
+# --- 4. ส่วน Navigation & UI ---
 st.set_page_config(page_title="Breakdown Management System", layout="wide")
 
 if "current_page" not in st.session_state:
@@ -213,40 +323,57 @@ if st.session_state.current_page == "home":
 
 elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
-    
-    # Process Dropdown
-    selected_process = st.selectbox("Process *", PROCESS_OPTIONS, key="process_select")
-    reported_by = st.text_input("ชื่อผู้แจ้งปัญหา (info. by) *", key="reporter_input")
-    issue_description = st.text_area("ปัญหาที่พบ (Problem Detail) *", key="issue_input")
 
-    # Effect Dropdown (อยู่ล่างสุด)
-    selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS, key="effect_select")
-    
+    selected_process = st.selectbox(
+        "Process *", PROCESS_OPTIONS, key="process_select"
+    )
+    reported_by = st.text_input(
+        "ชื่อผู้แจ้งปัญหา (info. by) *", key="reporter_input"
+    )
+    issue_description = st.text_area(
+        "ปัญหาที่พบ (Problem Detail) *", key="issue_input"
+    )
+
+    selected_effect = st.selectbox(
+        "ผลกระทบ (Effect) *", EFFECT_OPTIONS, key="effect_select"
+    )
+
     other_effect_detail = ""
     if selected_effect == "อื่นๆระบุ (Other)":
-        other_effect_detail = st.text_input("ระบุรายละเอียด Effect อื่นๆ *", placeholder="เช่น ปรับเปลี่ยนแผนการพ่นสี", key="other_effect_input")
+        other_effect_detail = st.text_input(
+            "ระบุรายละเอียด Effect อื่นๆ *",
+            placeholder="เช่น ปรับเปลี่ยนแผนการพ่นสี",
+            key="other_effect_input",
+        )
 
     st.write("")
-    if st.button("บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"):
-        # คำนวณค่า Process
-        final_process = selected_process if selected_process != PROCESS_OPTIONS[0] else ""
+    if st.button(
+        "บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"
+    ):
+        final_process = (
+            selected_process if selected_process != PROCESS_OPTIONS[0] else ""
+        )
 
-        # คำนวณค่า Effect
         final_effect = ""
         if selected_effect == "อื่นๆระบุ (Other)":
-            final_effect = f"อื่นๆ: {other_effect_detail}" if other_effect_detail else ""
+            final_effect = (
+                f"อื่นๆ: {other_effect_detail}" if other_effect_detail else ""
+            )
         elif selected_effect != EFFECT_OPTIONS[0]:
             final_effect = selected_effect
 
-        # ตรวจสอบการกรอกข้อมูลให้ครบถ้วน
         if final_process and reported_by and issue_description and final_effect:
-            create_ticket(final_process, issue_description, reported_by, final_effect)
+            create_ticket(
+                final_process, issue_description, reported_by, final_effect
+            )
             now_th = datetime.datetime.now(THAILAND_TZ)
             st.success(
                 f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
             )
         else:
-            st.error("กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน")
+            st.error(
+                "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
+            )
 
 elif st.session_state.current_page == "pending":
     st.title("รายการ Breakdown ที่กำลังดำเนินการ")
@@ -260,18 +387,26 @@ elif st.session_state.current_page == "pending":
         st.info("ไม่มีงาน Breakdown ค้างในระบบ")
     else:
         for idx, row in pending_df.iterrows():
-            formatted_start = str(row['start_time'])[:16]
-            effect_txt = row['effect'] if row['effect'] else "-"
+            formatted_start = str(row["start_time"])[:16]
+            effect_txt = row["effect"] if row["effect"] else "-"
 
             with st.expander(
                 f"Process: {row['machine_name']} (แจ้งเมื่อ: {formatted_start} โดย {row['reported_by']})"
             ):
-                st.write(f"**ปัญหาที่พบ (Problem Detail):** {row['issue_description']}")
+                st.write(
+                    f"**ปัญหาที่พบ (Problem Detail):** {row['issue_description']}"
+                )
                 st.write(f"**ผลกระทบ (Effect):** {effect_txt}")
 
                 with st.form(key=f"close_form_{row['id']}"):
-                    team_name = st.text_input("ทีมที่ทำการแก้ไข *", placeholder="เช่น Robot, Maintenance")
-                    action_detail = st.text_area("รายละเอียดการแก้ไข (Detail) *", placeholder="เช่น เปลี่ยนซีลกระบอกสูบ, รีเซ็ตโปรแกรมการพ่นสี")
+                    team_name = st.text_input(
+                        "ทีมที่ทำการแก้ไข *",
+                        placeholder="เช่น Robot, Maintenance",
+                    )
+                    action_detail = st.text_area(
+                        "รายละเอียดการแก้ไข (Detail) *",
+                        placeholder="เช่น เปลี่ยนซีลกระบอกสูบ, รีเซ็ตโปรแกรมการพ่นสี",
+                    )
                     close_btn = st.form_submit_button("บันทึกการปิดงาน")
 
                     if close_btn:
@@ -282,24 +417,39 @@ elif st.session_state.current_page == "pending":
                             )
                             st.rerun()
                         else:
-                            st.warning("กรุณากรอกชื่อทีมและรายละเอียดการแก้ไขให้ครบถ้วน")
+                            st.warning(
+                                "กรุณากรอกชื่อทีมและรายละเอียดการแก้ไขให้ครบถ้วน"
+                            )
 
 elif st.session_state.current_page == "history":
     st.title("Record Downtime")
 
     all_df = pd.read_sql_query(
-        "SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC", conn
+        "SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC",
+        conn,
     )
 
     if not all_df.empty:
-        all_df['Date'] = all_df['start_time'].apply(lambda x: str(x)[:10] if pd.notna(x) and len(str(x)) >= 10 else "")
-        all_df['Start_time'] = all_df['start_time'].apply(lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else "")
-        all_df['Finish_time'] = all_df['end_time'].apply(lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else "")
+        all_df["Date"] = all_df["start_time"].apply(
+            lambda x: str(x)[:10] if pd.notna(x) and len(str(x)) >= 10 else ""
+        )
+        all_df["Start_time"] = all_df["start_time"].apply(
+            lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else ""
+        )
+        all_df["Finish_time"] = all_df["end_time"].apply(
+            lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else ""
+        )
 
         def clean_data(row):
-            action = str(row['action_taken']) if row['action_taken'] is not None else ""
-            team = str(row['team_name']) if row['team_name'] is not None else ""
-            
+            action = (
+                str(row["action_taken"])
+                if row["action_taken"] is not None
+                else ""
+            )
+            team = (
+                str(row["team_name"]) if row["team_name"] is not None else ""
+            )
+
             if "ทีมที่แก้ไข:" in action and " | รายละเอียด:" in action:
                 parts = action.split(" | รายละเอียด: ")
                 extracted_team = parts[0].replace("ทีมที่แก้ไข: ", "").strip()
@@ -311,33 +461,35 @@ elif st.session_state.current_page == "history":
             else:
                 return pd.Series([team, action])
 
-        all_df[['team_name', 'action_taken']] = all_df.apply(clean_data, axis=1)
+        all_df[["team_name", "action_taken"]] = all_df.apply(
+            clean_data, axis=1
+        )
 
         rename_dict = {
-            'machine_name': 'Process',
-            'issue_description': 'Problem Detail',
-            'downtime_minutes': 'Downtime (minutes)',
-            'effect': 'Effect',
-            'reported_by': 'info. by',
-            'team_name': 'Correct by (Team)',
-            'action_taken': 'Detail'
+            "machine_name": "Process",
+            "issue_description": "Problem Detail",
+            "downtime_minutes": "Downtime (minutes)",
+            "effect": "Effect",
+            "reported_by": "info. by",
+            "team_name": "Correct by (Team)",
+            "action_taken": "Detail",
         }
         all_df = all_df.rename(columns=rename_dict)
 
         ordered_columns = [
-            'Date', 
-            'Process', 
-            'Start_time', 
-            'Finish_time', 
-            'Downtime (minutes)',
-            'Problem Detail', 
-            'Effect',
-            'info. by', 
-            'Correct by (Team)', 
-            'Detail',
-            'status'
+            "Date",
+            "Process",
+            "Start_time",
+            "Finish_time",
+            "Downtime (minutes)",
+            "Problem Detail",
+            "Effect",
+            "info. by",
+            "Correct by (Team)",
+            "Detail",
+            "status",
         ]
-        
+
         all_df = all_df[ordered_columns]
 
         st.dataframe(all_df, use_container_width=True)
