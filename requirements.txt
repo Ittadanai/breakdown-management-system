@@ -1,5 +1,6 @@
 streamlit
 pandas
 requests
-psycopg2-binary
 SQLAlchemy
+psycopg2-binary
+streamlit-js-eval
