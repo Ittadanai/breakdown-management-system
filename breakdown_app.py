@@ -27,6 +27,7 @@ PROCESS_OPTIONS = [
     "Top coat",
     "T-UP",
     "Plastic",
+    "อื่นๆระบุ (Other)",
 ]
 
 # --- กำหนดตัวเลือกสำหรับ Effect Dropdown ---
@@ -35,6 +36,15 @@ EFFECT_OPTIONS = [
     "ไม่หยุดการผลิต (Production will not Stop)",
     "หยุดการผลิต (Production Stop)",
     "รถเสียหาย (Body NCR)",
+    "อื่นๆระบุ (Other)",
+]
+
+# --- กำหนดตัวเลือกสำหรับ Team Dropdown ---
+TEAM_OPTIONS = [
+    "-- กรุณาเลือก Team --",
+    "Engineer",
+    "Production",
+    "Robot",
     "อื่นๆระบุ (Other)",
 ]
 
@@ -74,7 +84,7 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# สร้างตาราง breakdown_logs บน Supabase อัตโนมัติหากยังไม่มี
+# สร้างตาราง breakdown_logs และเพิ่มคอลัมน์ solver_name อัตโนมัติหากยังไม่มี
 def init_db():
     with engine.begin() as conn:
         conn.execute(text("""
@@ -89,9 +99,14 @@ def init_db():
             status TEXT,
             action_taken TEXT,
             team_name TEXT,
+            solver_name TEXT,
             effect TEXT,
             last_notified_step INTEGER DEFAULT 0
         );
+        """))
+        # ป้องกันกรณีตารางสร้างไปแล้วแต่ยังไม่มีคอลัมน์ solver_name
+        conn.execute(text("""
+        ALTER TABLE breakdown_logs ADD COLUMN IF NOT EXISTS solver_name TEXT;
         """))
 
 init_db()
@@ -217,7 +232,7 @@ def create_ticket(machine, issue, reporter, effect):
     send_line_message(line_msg)
 
 
-def close_ticket(ticket_id, team_name, action_detail):
+def close_ticket(ticket_id, solver_name, team_name, action_detail):
     now_dt = datetime.datetime.now(THAILAND_TZ)
     end_time_str = now_dt.strftime("%Y-%m-%d %H:%M")
 
@@ -246,7 +261,7 @@ def close_ticket(ticket_id, team_name, action_detail):
         conn.execute(
             text("""
             UPDATE breakdown_logs 
-            SET end_time = :end_time, downtime_minutes = :downtime, status = 'Closed', action_taken = :action, team_name = :team
+            SET end_time = :end_time, downtime_minutes = :downtime, status = 'Closed', action_taken = :action, team_name = :team, solver_name = :solver
             WHERE id = :ticket_id
             """),
             {
@@ -254,6 +269,7 @@ def close_ticket(ticket_id, team_name, action_detail):
                 "downtime": downtime_minutes,
                 "action": action_detail,
                 "team": team_name,
+                "solver": solver_name,
                 "ticket_id": ticket_id,
             }
         )
@@ -261,7 +277,8 @@ def close_ticket(ticket_id, team_name, action_detail):
     line_msg = (
         f"ปิดงาน Breakdown แล้ว\n"
         f"Process: {machine_name}\n"
-        f"ทีมที่ทำการแก้ไข: {team_name}\n"
+        f"ชื่อผู้แก้ไข (Name): {solver_name}\n"
+        f"ทีมที่ทำการแก้ไข (Team): {team_name}\n"
         f"วิธีการแก้ไข: {action_detail}\n"
         f"เวลาที่ใช้ทั้งหมด (Downtime): {downtime_minutes} นาที\n"
         f"เวลาปิดงาน: {end_time_str}"
@@ -327,6 +344,15 @@ elif st.session_state.current_page == "report":
     selected_process = st.selectbox(
         "Process *", PROCESS_OPTIONS, key="process_select"
     )
+
+    other_process_detail = ""
+    if selected_process == "อื่นๆระบุ (Other)":
+        other_process_detail = st.text_input(
+            "ระบุรายละเอียด Process อื่นๆ *",
+            placeholder="เช่น Sealer, Inspection, Wax",
+            key="other_process_input",
+        )
+
     reported_by = st.text_input(
         "ชื่อผู้แจ้งปัญหา (info. by) *", key="reporter_input"
     )
@@ -350,15 +376,15 @@ elif st.session_state.current_page == "report":
     if st.button(
         "บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"
     ):
-        final_process = (
-            selected_process if selected_process != PROCESS_OPTIONS[0] else ""
-        )
+        final_process = ""
+        if selected_process == "อื่นๆระบุ (Other)":
+            final_process = other_process_detail.strip()
+        elif selected_process != PROCESS_OPTIONS[0]:
+            final_process = selected_process
 
         final_effect = ""
         if selected_effect == "อื่นๆระบุ (Other)":
-            final_effect = (
-                f"อื่นๆ: {other_effect_detail}" if other_effect_detail else ""
-            )
+            final_effect = other_effect_detail.strip()
         elif selected_effect != EFFECT_OPTIONS[0]:
             final_effect = selected_effect
 
@@ -398,39 +424,61 @@ elif st.session_state.current_page == "pending":
                 )
                 st.write(f"**ผลกระทบ (Effect):** {effect_txt}")
 
-                with st.form(key=f"close_form_{row['id']}"):
-                    team_name = st.text_input(
-                        "ทีมที่ทำการแก้ไข *",
-                        placeholder="เช่น Robot, Maintenance",
-                    )
-                    action_detail = st.text_area(
-                        "รายละเอียดการแก้ไข (Detail) *",
-                        placeholder="เช่น เปลี่ยนซีลกระบอกสูบ, รีเซ็ตโปรแกรมการพ่นสี",
-                    )
-                    close_btn = st.form_submit_button("บันทึกการปิดงาน")
+                # ส่วนฟอร์มปิดงาน
+                solver_name = st.text_input(
+                    "ชื่อผู้แก้ไข (Name) *",
+                    placeholder="เช่น สมชาย ใจดี",
+                    key=f"solver_{row['id']}"
+                )
 
-                    if close_btn:
-                        if team_name and action_detail:
-                            close_ticket(row["id"], team_name, action_detail)
-                            st.success(
-                                f"ปิดงาน Process: {row['machine_name']} เรียบร้อยแล้ว และส่ง LINE สรุปผลเข้ากลุ่มแล้ว"
-                            )
-                            st.rerun()
-                        else:
-                            st.warning(
-                                "กรุณากรอกชื่อทีมและรายละเอียดการแก้ไขให้ครบถ้วน"
-                            )
+                selected_team = st.selectbox(
+                    "ทีมที่แก้ไข (Team) *",
+                    TEAM_OPTIONS,
+                    key=f"team_select_{row['id']}"
+                )
+
+                other_team_detail = ""
+                if selected_team == "อื่นๆระบุ (Other)":
+                    other_team_detail = st.text_input(
+                        "ระบุรายละเอียดทีมอื่นๆ *",
+                        placeholder="เช่น Subcontractor, External Vendor",
+                        key=f"other_team_{row['id']}"
+                    )
+
+                action_detail = st.text_area(
+                    "รายละเอียดการแก้ไข (Detail) *",
+                    placeholder="เช่น เปลี่ยนซีลกระบอกสูบ, รีเซ็ตโปรแกรมการพ่นสี",
+                    key=f"action_{row['id']}"
+                )
+
+                if st.button("บันทึกการปิดงาน", key=f"close_btn_{row['id']}", type="primary"):
+                    final_team = ""
+                    if selected_team == "อื่นๆระบุ (Other)":
+                        final_team = other_team_detail.strip()
+                    elif selected_team != TEAM_OPTIONS[0]:
+                        final_team = selected_team
+
+                    if solver_name.strip() and final_team and action_detail.strip():
+                        close_ticket(row["id"], solver_name.strip(), final_team, action_detail.strip())
+                        st.success(
+                            f"ปิดงาน Process: {row['machine_name']} เรียบร้อยแล้ว และส่ง LINE สรุปผลเข้ากลุ่มแล้ว"
+                        )
+                        st.rerun()
+                    else:
+                        st.warning(
+                            "กรุณากรอกชื่อผู้แก้ไข เลือกทีม และระบุรายละเอียดการแก้ไขให้ครบถ้วน *"
+                        )
 
 elif st.session_state.current_page == "history":
     st.title("Record Downtime")
 
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC"))
+        result = conn.execute(text("SELECT machine_name, issue_description, reported_by, start_time, end_time, downtime_minutes, status, team_name, solver_name, action_taken, effect FROM breakdown_logs ORDER BY id DESC"))
         rows = result.fetchall()
         all_df = pd.DataFrame(rows, columns=[
             "machine_name", "issue_description", "reported_by", 
             "start_time", "end_time", "downtime_minutes", 
-            "status", "team_name", "action_taken", "effect"
+            "status", "team_name", "solver_name", "action_taken", "effect"
         ])
 
     if not all_df.empty:
@@ -444,37 +492,13 @@ elif st.session_state.current_page == "history":
             lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else ""
         )
 
-        def clean_data(row):
-            action = (
-                str(row["action_taken"])
-                if row["action_taken"] is not None
-                else ""
-            )
-            team = (
-                str(row["team_name"]) if row["team_name"] is not None else ""
-            )
-
-            if "ทีมที่แก้ไข:" in action and " | รายละเอียด:" in action:
-                parts = action.split(" | รายละเอียด: ")
-                extracted_team = parts[0].replace("ทีมที่แก้ไข: ", "").strip()
-                extracted_action = parts[1].strip() if len(parts) > 1 else ""
-                return pd.Series([extracted_team, extracted_action])
-            elif "ทีมที่แก้ไข:" in action:
-                extracted_team = action.replace("ทีมที่แก้ไข: ", "").strip()
-                return pd.Series([extracted_team, ""])
-            else:
-                return pd.Series([team, action])
-
-        all_df[["team_name", "action_taken"]] = all_df.apply(
-            clean_data, axis=1
-        )
-
         rename_dict = {
             "machine_name": "Process",
             "issue_description": "Problem Detail",
             "downtime_minutes": "Downtime (minutes)",
             "effect": "Effect",
             "reported_by": "info. by",
+            "solver_name": "Name",
             "team_name": "Correct by (Team)",
             "action_taken": "Detail",
         }
@@ -489,6 +513,7 @@ elif st.session_state.current_page == "history":
             "Problem Detail",
             "Effect",
             "info. by",
+            "Name",
             "Correct by (Team)",
             "Detail",
             "status",
