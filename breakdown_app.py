@@ -333,7 +333,7 @@ elif st.session_state.current_page == "report":
     with st.form("breakdown_report_form", clear_on_submit=True):
         selected_process = st.selectbox("Process *", PROCESS_OPTIONS)
         
-        # แสดงช่องนี้เมื่อเลือก "อื่นๆระบุ (Other)" เท่านั้น
+        # แสดงช่องด้านล่างเฉพาะเมื่อเลือก "อื่นๆระบุ (Other)"
         other_process_detail = ""
         if selected_process == "อื่นๆระบุ (Other)":
             other_process_detail = st.text_input("ระบุรายละเอียด Process อื่นๆ *")
@@ -343,7 +343,7 @@ elif st.session_state.current_page == "report":
 
         selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS)
         
-        # แสดงช่องนี้เมื่อเลือก "อื่นๆระบุ (Other)" เท่านั้น
+        # แสดงช่องด้านล่างเฉพาะเมื่อเลือก "อื่นๆระบุ (Other)"
         other_effect_detail = ""
         if selected_effect == "อื่นๆระบุ (Other)":
             other_effect_detail = st.text_input("ระบุรายละเอียด Effect อื่นๆ *")
@@ -412,7 +412,7 @@ elif st.session_state.current_page == "pending":
                     key=f"team_select_{row['id']}"
                 )
 
-                # แสดงช่องระบุทีมอื่นๆ เมื่อเลือก "อื่นๆระบุ (Other)" เท่านั้น
+                # แสดงช่องระบุทีมด้านล่างเฉพาะเมื่อเลือก "อื่นๆระบุ (Other)"
                 other_team_detail = ""
                 if selected_team == "อื่นๆระบุ (Other)":
                     other_team_detail = st.text_input(
