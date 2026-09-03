@@ -266,7 +266,7 @@ def close_ticket(ticket_id, solver_name, team_name, action_detail):
     line_msg = (
         f"ปิดงาน Breakdown แล้ว\n"
         f"Process: {machine_name}\n"
-        f"ชื่อผู้แก้ไข (Name): {solver_name}\n"
+        f"ชื่อผู้แก้ไข (Correct by (Name)): {solver_name}\n"
         f"ทีมที่ทำการแก้ไข (Team): {team_name}\n"
         f"วิธีการแก้ไข: {action_detail}\n"
         f"เวลาที่ใช้ทั้งหมด (Downtime): {downtime_minutes} นาที\n"
@@ -281,7 +281,7 @@ st.set_page_config(page_title="Breakdown Management System", layout="wide")
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 
-# ตรวจสอบ Flag สำหรับการล้างค่าในฟอร์ม (ทำงานก่อนการสร้าง Widget เพื่อป้องกัน Error)
+# ตรวจสอบ Flag สำหรับการล้างค่าในฟอร์ม
 if st.session_state.get("clear_report_form", False):
     st.session_state["rep_process"] = PROCESS_OPTIONS[0]
     st.session_state["rep_by"] = ""
@@ -379,11 +379,9 @@ elif st.session_state.current_page == "report":
             )
             now_th = datetime.datetime.now(THAILAND_TZ)
             
-            # บันทึกสถานะเพื่อแสดงแจ้งเตือนความสำเร็จในรอบถัดไป
             st.session_state["show_success"] = True
             st.session_state["success_msg"] = f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
 
-            # ตั้ง Flag เพื่อให้ทำการResetค่าในรอบถัดไป ก่อนสร้าง Widget
             st.session_state["clear_report_form"] = True
 
             st.rerun()
@@ -416,7 +414,7 @@ elif st.session_state.current_page == "pending":
                 st.write(f"**ผลกระทบ (Effect):** {effect_txt}")
 
                 solver_name = st.text_input(
-                    "ชื่อผู้แก้ไข (Name) *",
+                    "ชื่อผู้แก้ไข (Correct by (Name)) *",
                     key=f"solver_{row['id']}"
                 )
 
@@ -481,13 +479,14 @@ elif st.session_state.current_page == "history":
             lambda x: str(x)[11:16] if pd.notna(x) and len(str(x)) >= 16 else ""
         )
 
+        # แก้ไขชื่อคอลัมน์ solver_name เป็น Correct by (Name)
         rename_dict = {
             "machine_name": "Process",
             "issue_description": "Problem Detail",
             "downtime_minutes": "Downtime (minutes)",
             "effect": "Effect",
             "reported_by": "info. by",
-            "solver_name": "Name",
+            "solver_name": "Correct by (Name)",
             "team_name": "Correct by (Team)",
             "action_taken": "Detail",
         }
@@ -503,7 +502,7 @@ elif st.session_state.current_page == "history":
             "Problem Detail",
             "Effect",
             "info. by",
-            "Name",
+            "Correct by (Name)",
             "Correct by (Team)",
             "Detail",
             "status",
