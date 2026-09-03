@@ -332,17 +332,21 @@ elif st.session_state.current_page == "report":
 
     with st.form("breakdown_report_form", clear_on_submit=True):
         selected_process = st.selectbox("Process *", PROCESS_OPTIONS)
-        other_process_detail = st.text_input(
-            "ระบุรายละเอียด Process อื่นๆ (กรณีเลือก อื่นๆระบุ)"
-        )
+        
+        # แสดงช่องนี้เมื่อเลือก "อื่นๆระบุ (Other)" เท่านั้น
+        other_process_detail = ""
+        if selected_process == "อื่นๆระบุ (Other)":
+            other_process_detail = st.text_input("ระบุรายละเอียด Process อื่นๆ *")
 
         reported_by = st.text_input("ชื่อผู้แจ้งปัญหา (info. by) *")
         issue_description = st.text_area("ปัญหาที่พบ (Problem Detail) *")
 
         selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS)
-        other_effect_detail = st.text_input(
-            "ระบุรายละเอียด Effect อื่นๆ (กรณีเลือก อื่นๆระบุ)"
-        )
+        
+        # แสดงช่องนี้เมื่อเลือก "อื่นๆระบุ (Other)" เท่านั้น
+        other_effect_detail = ""
+        if selected_effect == "อื่นๆระบุ (Other)":
+            other_effect_detail = st.text_input("ระบุรายละเอียด Effect อื่นๆ *")
 
         submitted = st.form_submit_button(
             "บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"
@@ -408,6 +412,7 @@ elif st.session_state.current_page == "pending":
                     key=f"team_select_{row['id']}"
                 )
 
+                # แสดงช่องระบุทีมอื่นๆ เมื่อเลือก "อื่นๆระบุ (Other)" เท่านั้น
                 other_team_detail = ""
                 if selected_team == "อื่นๆระบุ (Other)":
                     other_team_detail = st.text_input(
