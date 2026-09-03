@@ -104,7 +104,6 @@ def init_db():
             last_notified_step INTEGER DEFAULT 0
         );
         """))
-        # ป้องกันกรณีตารางสร้างไปแล้วแต่ยังไม่มีคอลัมน์ solver_name
         conn.execute(text("""
         ALTER TABLE breakdown_logs ADD COLUMN IF NOT EXISTS solver_name TEXT;
         """))
@@ -114,7 +113,7 @@ init_db()
 
 # --- 2. ฟังก์ชันตรวจสอบและแจ้งเตือนงาน Breakdown ที่ค้างอยู่ (Background Worker) ---
 def check_pending_breakdowns():
-    """ฟังก์ชันเบื้องหลัง คอยเช็กงานค้างเพื่อส่งเตือน 30 นาที, 1 ชม. และทุกๆ 1 ชม."""
+    """ฟังก์ชันเบื้องหลัง คอยเช็กงานค้างเพื่อส่งเตือนเฉพาะที่ 30 นาที และ 1 ชั่วโมงเท่านั้น"""
     while True:
         try:
             with engine.connect() as bg_conn:
@@ -149,19 +148,15 @@ def check_pending_breakdowns():
                         target_step = 0
                         reminder_label = ""
 
-                        # กำหนดเงื่อนไขการแจ้งเตือน
+                        # แจ้งเตือนครั้งที่ 1: ครบ 30 นาที
                         if elapsed_minutes >= 30 and last_step < 1 and elapsed_minutes < 60:
                             target_step = 1
                             reminder_label = "แจ้งเตือน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 30 นาที!"
-                        elif elapsed_minutes >= 60:
-                            hours_passed = elapsed_minutes // 60
-                            current_calculated_step = 1 + hours_passed
+                        # แจ้งเตือนครั้งที่ 2 (ครั้งสุดท้าย): ครบ 1 ชั่วโมง
+                        elif elapsed_minutes >= 60 and last_step < 2:
+                            target_step = 2
+                            reminder_label = "แจ้งเตือนด่วน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 1 ชั่วโมง!"
 
-                            if current_calculated_step > last_step:
-                                target_step = current_calculated_step
-                                reminder_label = f"แจ้งเตือนด่วน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว {hours_passed} ชั่วโมง!"
-
-                        # หากเข้าเงื่อนไขส่งเตือนรอบใหม่
                         if target_step > 0 and reminder_label:
                             line_msg = (
                                 f"{reminder_label}\n"
@@ -184,11 +179,9 @@ def check_pending_breakdowns():
         except Exception as e:
             print(f"Error in background checker: {e}")
 
-        # เช็กทุกๆ 60 วินาที
         time.sleep(60)
 
 
-# เริ่มการทำงานเบื้องหลัง (Background Thread) เพียงครั้งเดียว
 if not any(
     thread.name == "BreakdownReminderThread"
     for thread in threading.enumerate()
@@ -292,6 +285,29 @@ st.set_page_config(page_title="Breakdown Management System", layout="wide")
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 
+# กำหนด Session State สำหรับ Reset ฟอร์มแจ้งงาน
+if "report_process" not in st.session_state:
+    st.session_state.report_process = PROCESS_OPTIONS[0]
+if "report_other_process" not in st.session_state:
+    st.session_state.report_other_process = ""
+if "report_reporter" not in st.session_state:
+    st.session_state.report_reporter = ""
+if "report_issue" not in st.session_state:
+    st.session_state.report_issue = ""
+if "report_effect" not in st.session_state:
+    st.session_state.report_effect = EFFECT_OPTIONS[0]
+if "report_other_effect" not in st.session_state:
+    st.session_state.report_other_effect = ""
+
+
+def reset_report_form():
+    st.session_state.report_process = PROCESS_OPTIONS[0]
+    st.session_state.report_other_process = ""
+    st.session_state.report_reporter = ""
+    st.session_state.report_issue = ""
+    st.session_state.report_effect = EFFECT_OPTIONS[0]
+    st.session_state.report_other_effect = ""
+
 
 def navigate_to(page_name):
     st.session_state.current_page = page_name
@@ -342,7 +358,7 @@ elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
 
     selected_process = st.selectbox(
-        "Process *", PROCESS_OPTIONS, key="process_select"
+        "Process *", PROCESS_OPTIONS, key="report_process"
     )
 
     other_process_detail = ""
@@ -350,18 +366,18 @@ elif st.session_state.current_page == "report":
         other_process_detail = st.text_input(
             "ระบุรายละเอียด Process อื่นๆ *",
             placeholder="เช่น Sealer, Inspection, Wax",
-            key="other_process_input",
+            key="report_other_process",
         )
 
     reported_by = st.text_input(
-        "ชื่อผู้แจ้งปัญหา (info. by) *", key="reporter_input"
+        "ชื่อผู้แจ้งปัญหา (info. by) *", key="report_reporter"
     )
     issue_description = st.text_area(
-        "ปัญหาที่พบ (Problem Detail) *", key="issue_input"
+        "ปัญหาที่พบ (Problem Detail) *", key="report_issue"
     )
 
     selected_effect = st.selectbox(
-        "ผลกระทบ (Effect) *", EFFECT_OPTIONS, key="effect_select"
+        "ผลกระทบ (Effect) *", EFFECT_OPTIONS, key="report_effect"
     )
 
     other_effect_detail = ""
@@ -369,7 +385,7 @@ elif st.session_state.current_page == "report":
         other_effect_detail = st.text_input(
             "ระบุรายละเอียด Effect อื่นๆ *",
             placeholder="เช่น ปรับเปลี่ยนแผนการพ่นสี",
-            key="other_effect_input",
+            key="report_other_effect",
         )
 
     st.write("")
@@ -388,14 +404,17 @@ elif st.session_state.current_page == "report":
         elif selected_effect != EFFECT_OPTIONS[0]:
             final_effect = selected_effect
 
-        if final_process and reported_by and issue_description and final_effect:
+        if final_process and reported_by.strip() and issue_description.strip() and final_effect:
             create_ticket(
-                final_process, issue_description, reported_by, final_effect
+                final_process, issue_description.strip(), reported_by.strip(), final_effect
             )
             now_th = datetime.datetime.now(THAILAND_TZ)
             st.success(
                 f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
             )
+            # ล้างข้อมูลในฟอร์มเมื่อบันทึกสำเร็จ
+            reset_report_form()
+            st.rerun()
         else:
             st.error(
                 "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
@@ -482,6 +501,9 @@ elif st.session_state.current_page == "history":
         ])
 
     if not all_df.empty:
+        # สร้างคอลัมน์ No. โดยเริ่มลำดับจาก 1
+        all_df["No."] = range(1, len(all_df) + 1)
+
         all_df["Date"] = all_df["start_time"].apply(
             lambda x: str(x)[:10] if pd.notna(x) and len(str(x)) >= 10 else ""
         )
@@ -504,7 +526,9 @@ elif st.session_state.current_page == "history":
         }
         all_df = all_df.rename(columns=rename_dict)
 
+        # จัดลำดับคอลัมน์ใหม่โดยวาง No. ไว้หน้า Date
         ordered_columns = [
+            "No.",
             "Date",
             "Process",
             "Start_time",
@@ -521,6 +545,7 @@ elif st.session_state.current_page == "history":
 
         all_df = all_df[ordered_columns]
 
-        st.dataframe(all_df, use_container_width=True)
+        # แสดงผลโดยซ่อน Index เริ่มต้นของ Streamlit
+        st.dataframe(all_df, use_container_width=True, hide_index=True)
     else:
         st.write("ยังไม่มีข้อมูลในระบบ")
