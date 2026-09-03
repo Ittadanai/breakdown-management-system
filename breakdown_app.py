@@ -84,7 +84,6 @@ def get_db_engine():
 
 engine = get_db_engine()
 
-# สร้างตาราง breakdown_logs และเพิ่มคอลัมน์ solver_name อัตโนมัติหากยังไม่มี
 def init_db():
     with engine.begin() as conn:
         conn.execute(text("""
@@ -113,7 +112,6 @@ init_db()
 
 # --- 2. ฟังก์ชันตรวจสอบและแจ้งเตือนงาน Breakdown ที่ค้างอยู่ (Background Worker) ---
 def check_pending_breakdowns():
-    """ฟังก์ชันเบื้องหลัง คอยเช็กงานค้างเพื่อส่งเตือนเฉพาะที่ 30 นาที และ 1 ชั่วโมงเท่านั้น"""
     while True:
         try:
             with engine.connect() as bg_conn:
@@ -148,11 +146,9 @@ def check_pending_breakdowns():
                         target_step = 0
                         reminder_label = ""
 
-                        # แจ้งเตือนครั้งที่ 1: ครบ 30 นาที
                         if elapsed_minutes >= 30 and last_step < 1 and elapsed_minutes < 60:
                             target_step = 1
                             reminder_label = "แจ้งเตือน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 30 นาที!"
-                        # แจ้งเตือนครั้งที่ 2 (ครั้งสุดท้าย): ครบ 1 ชั่วโมง
                         elif elapsed_minutes >= 60 and last_step < 2:
                             target_step = 2
                             reminder_label = "แจ้งเตือนด่วน: ปัญหายังไม่ถูกแก้ไขผ่านไปแล้ว 1 ชั่วโมง!"
@@ -285,29 +281,6 @@ st.set_page_config(page_title="Breakdown Management System", layout="wide")
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 
-# กำหนด Session State สำหรับ Reset ฟอร์มแจ้งงาน
-if "report_process" not in st.session_state:
-    st.session_state.report_process = PROCESS_OPTIONS[0]
-if "report_other_process" not in st.session_state:
-    st.session_state.report_other_process = ""
-if "report_reporter" not in st.session_state:
-    st.session_state.report_reporter = ""
-if "report_issue" not in st.session_state:
-    st.session_state.report_issue = ""
-if "report_effect" not in st.session_state:
-    st.session_state.report_effect = EFFECT_OPTIONS[0]
-if "report_other_effect" not in st.session_state:
-    st.session_state.report_other_effect = ""
-
-
-def reset_report_form():
-    st.session_state.report_process = PROCESS_OPTIONS[0]
-    st.session_state.report_other_process = ""
-    st.session_state.report_reporter = ""
-    st.session_state.report_issue = ""
-    st.session_state.report_effect = EFFECT_OPTIONS[0]
-    st.session_state.report_other_effect = ""
-
 
 def navigate_to(page_name):
     st.session_state.current_page = page_name
@@ -357,68 +330,52 @@ if st.session_state.current_page == "home":
 elif st.session_state.current_page == "report":
     st.title("ฟอร์มแจ้งเครื่องจักรขัดข้อง")
 
-    selected_process = st.selectbox(
-        "Process *", PROCESS_OPTIONS, key="report_process"
-    )
-
-    other_process_detail = ""
-    if selected_process == "อื่นๆระบุ (Other)":
+    # ใช้ st.form ร่วมกับ clear_on_submit=True เพื่อล้างฟอร์มเมื่อบันทึกสำเร็จโดยไม่เกิด error
+    with st.form("breakdown_report_form", clear_on_submit=True):
+        selected_process = st.selectbox("Process *", PROCESS_OPTIONS)
         other_process_detail = st.text_input(
-            "ระบุรายละเอียด Process อื่นๆ *",
+            "ระบุรายละเอียด Process อื่นๆ (กรณีเลือก อื่นๆระบุ)",
             placeholder="เช่น Sealer, Inspection, Wax",
-            key="report_other_process",
         )
 
-    reported_by = st.text_input(
-        "ชื่อผู้แจ้งปัญหา (info. by) *", key="report_reporter"
-    )
-    issue_description = st.text_area(
-        "ปัญหาที่พบ (Problem Detail) *", key="report_issue"
-    )
+        reported_by = st.text_input("ชื่อผู้แจ้งปัญหา (info. by) *")
+        issue_description = st.text_area("ปัญหาที่พบ (Problem Detail) *")
 
-    selected_effect = st.selectbox(
-        "ผลกระทบ (Effect) *", EFFECT_OPTIONS, key="report_effect"
-    )
-
-    other_effect_detail = ""
-    if selected_effect == "อื่นๆระบุ (Other)":
+        selected_effect = st.selectbox("ผลกระทบ (Effect) *", EFFECT_OPTIONS)
         other_effect_detail = st.text_input(
-            "ระบุรายละเอียด Effect อื่นๆ *",
+            "ระบุรายละเอียด Effect อื่นๆ (กรณีเลือก อื่นๆระบุ)",
             placeholder="เช่น ปรับเปลี่ยนแผนการพ่นสี",
-            key="report_other_effect",
         )
 
-    st.write("")
-    if st.button(
-        "บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"
-    ):
-        final_process = ""
-        if selected_process == "อื่นๆระบุ (Other)":
-            final_process = other_process_detail.strip()
-        elif selected_process != PROCESS_OPTIONS[0]:
-            final_process = selected_process
+        submitted = st.form_submit_button(
+            "บันทึกการแจ้ง Breakdown", use_container_width=True, type="primary"
+        )
 
-        final_effect = ""
-        if selected_effect == "อื่นๆระบุ (Other)":
-            final_effect = other_effect_detail.strip()
-        elif selected_effect != EFFECT_OPTIONS[0]:
-            final_effect = selected_effect
+        if submitted:
+            final_process = ""
+            if selected_process == "อื่นๆระบุ (Other)":
+                final_process = other_process_detail.strip()
+            elif selected_process != PROCESS_OPTIONS[0]:
+                final_process = selected_process
 
-        if final_process and reported_by.strip() and issue_description.strip() and final_effect:
-            create_ticket(
-                final_process, issue_description.strip(), reported_by.strip(), final_effect
-            )
-            now_th = datetime.datetime.now(THAILAND_TZ)
-            st.success(
-                f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
-            )
-            # ล้างข้อมูลในฟอร์มเมื่อบันทึกสำเร็จ
-            reset_report_form()
-            st.rerun()
-        else:
-            st.error(
-                "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
-            )
+            final_effect = ""
+            if selected_effect == "อื่นๆระบุ (Other)":
+                final_effect = other_effect_detail.strip()
+            elif selected_effect != EFFECT_OPTIONS[0]:
+                final_effect = selected_effect
+
+            if final_process and reported_by.strip() and issue_description.strip() and final_effect:
+                create_ticket(
+                    final_process, issue_description.strip(), reported_by.strip(), final_effect
+                )
+                now_th = datetime.datetime.now(THAILAND_TZ)
+                st.success(
+                    f"บันทึกการแจ้งงานเรียบร้อยแล้ว และส่ง LINE แจ้งเตือนเข้ากลุ่มแล้ว (เวลาเริ่มต้น: {now_th.strftime('%Y-%m-%d %H:%M')})"
+                )
+            else:
+                st.error(
+                    "กรุณากรอกข้อมูลและเลือกตัวเลือกที่มีเครื่องหมาย * ให้ครบถ้วน"
+                )
 
 elif st.session_state.current_page == "pending":
     st.title("รายการ Breakdown ที่กำลังดำเนินการ")
@@ -443,7 +400,6 @@ elif st.session_state.current_page == "pending":
                 )
                 st.write(f"**ผลกระทบ (Effect):** {effect_txt}")
 
-                # ส่วนฟอร์มปิดงาน
                 solver_name = st.text_input(
                     "ชื่อผู้แก้ไข (Name) *",
                     placeholder="เช่น สมชาย ใจดี",
@@ -501,7 +457,6 @@ elif st.session_state.current_page == "history":
         ])
 
     if not all_df.empty:
-        # สร้างคอลัมน์ No. โดยเริ่มลำดับจาก 1
         all_df["No."] = range(1, len(all_df) + 1)
 
         all_df["Date"] = all_df["start_time"].apply(
@@ -526,7 +481,6 @@ elif st.session_state.current_page == "history":
         }
         all_df = all_df.rename(columns=rename_dict)
 
-        # จัดลำดับคอลัมน์ใหม่โดยวาง No. ไว้หน้า Date
         ordered_columns = [
             "No.",
             "Date",
@@ -545,7 +499,6 @@ elif st.session_state.current_page == "history":
 
         all_df = all_df[ordered_columns]
 
-        # แสดงผลโดยซ่อน Index เริ่มต้นของ Streamlit
         st.dataframe(all_df, use_container_width=True, hide_index=True)
     else:
         st.write("ยังไม่มีข้อมูลในระบบ")
